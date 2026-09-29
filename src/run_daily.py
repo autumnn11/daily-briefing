@@ -7,9 +7,9 @@ import time
 
 from src.collect_kor import KorApiError, collect_all
 from src.config import load_env, load_watchlist
-from src.judge import judge_price
+from src.judge import badges, judge_price
 from src.notify import Summary, build_blocks, post
-from src.store import init_db, log_run, upsert_trades
+from src.store import init_db, log_run, max_floor, upsert_trades
 
 log = logging.getLogger(__name__)
 
@@ -33,8 +33,10 @@ def _line(conn, r, today) -> str:
     tag = TAG[v.kind]
     if v.kind == "하락":
         tag = f"{tag} {v.pct}%"
+    bs = badges(r, max_floor(conn, r.complex_name), today)
+    suffix = f" `{' · '.join(bs)}`" if bs else ""
     return (f"• {r.complex_name} 전용 {r.area:.1f} {r.floor}층 — "
-            f"{_money(r.price)} {tag} (계약 {r.deal_date})")
+            f"{_money(r.price)} {tag} (계약 {r.deal_date}){suffix}")
 
 
 def run(today: date, db_path: Path, watchlist_path: Path,

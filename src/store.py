@@ -116,6 +116,13 @@ def recent_trades(conn, complex_name: str, area: float, before: str, days: int) 
     ).fetchall()
 
 
+def max_floor(conn, complex_name: str) -> int | None:
+    row = conn.execute(
+        "SELECT MAX(floor) AS f FROM trades WHERE complex_name = ?", (complex_name,)
+    ).fetchone()
+    return row["f"] if row and row["f"] is not None else None
+
+
 def log_run(conn, stage: str, ok: bool, count: int, secs: float, err: str | None) -> None:
     conn.execute(
         "INSERT INTO runs (ran_at, stage, ok, count, secs, err) "
