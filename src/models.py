@@ -34,3 +34,21 @@ class TradeRow:
     released_date: str | None
     register_date: str | None  # 등기일자
     asset: str                # APT / VL
+
+
+@dataclass(frozen=True)
+class ListingRow:
+    listing_no: str
+    name: str
+    deal_type: str            # 매매 / 전세 / 월세
+    price: int                # 원
+    floor: str                # "2/4"
+    area: float
+    exclusive_area: float
+    direction: str
+    features: str
+    listed_date: str | None   # YYYY-MM-DD
+    prev_jeonse: int | None
+    gap: int | None
+    gap_ratio: float | None
+    area_name: str

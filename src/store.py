@@ -1,9 +1,10 @@
 from dataclasses import dataclass
+from datetime import date as _date
 from pathlib import Path
 import hashlib
 import sqlite3
 
-from src.models import TradeRow
+from src.models import ListingRow, TradeRow
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS trades (
@@ -27,6 +28,33 @@ CREATE INDEX IF NOT EXISTS idx_trades_lookup
     ON trades (complex_name, area, deal_date);
 CREATE INDEX IF NOT EXISTS idx_trades_dong
     ON trades (lawd_cd, dong, deal_date);
+
+CREATE TABLE IF NOT EXISTS listings (
+    listing_no     TEXT PRIMARY KEY,
+    name           TEXT NOT NULL,
+    deal_type      TEXT NOT NULL,
+    price          INTEGER NOT NULL,
+    floor          TEXT,
+    area           REAL,
+    exclusive_area REAL,
+    direction      TEXT,
+    features       TEXT,
+    listed_date    TEXT,
+    prev_jeonse    INTEGER,
+    gap            INTEGER,
+    gap_ratio      REAL,
+    area_name      TEXT NOT NULL,
+    first_seen     TEXT NOT NULL,
+    last_seen      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_listings_area ON listings (area_name, deal_type, last_seen);
+
+CREATE TABLE IF NOT EXISTS listing_price_history (
+    listing_no  TEXT NOT NULL,
+    observed_on TEXT NOT NULL,
+    price       INTEGER NOT NULL,
+    PRIMARY KEY (listing_no, observed_on)
+);
 
 CREATE TABLE IF NOT EXISTS runs (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,3 +158,96 @@ def log_run(conn, stage: str, ok: bool, count: int, secs: float, err: str | None
         (stage, int(ok), count, secs, err),
     )
     conn.commit()
+
+
+@dataclass
+class PriceChange:
+    listing_no: str
+    name: str
+    prev: int
+    now: int
+    days: int
+    times: int
+
+
+@dataclass
+class ListingDiff:
+    new: list[ListingRow]
+    gone: list[sqlite3.Row]
+    price_changes: list[PriceChange]
+    counts: dict[tuple[str, str], int]
+
+
+def upsert_listings(conn, rows: list[ListingRow], area_name: str, today: str) -> ListingDiff:
+    new: list[ListingRow] = []
+    changes: list[PriceChange] = []
+
+    for row in rows:
+        prior = conn.execute(
+            "SELECT price, last_seen FROM listings WHERE listing_no = ?",
+            (row.listing_no,),
+        ).fetchone()
+
+        if prior is None:
+            conn.execute(
+                """INSERT INTO listings (listing_no, name, deal_type, price, floor, area,
+                       exclusive_area, direction, features, listed_date, prev_jeonse,
+                       gap, gap_ratio, area_name, first_seen, last_seen)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (row.listing_no, row.name, row.deal_type, row.price, row.floor, row.area,
+                 row.exclusive_area, row.direction, row.features, row.listed_date,
+                 row.prev_jeonse, row.gap, row.gap_ratio, area_name, today, today),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO listing_price_history VALUES (?,?,?)",
+                (row.listing_no, today, row.price),
+            )
+            new.append(row)
+            continue
+
+        if prior["price"] != row.price:
+            conn.execute(
+                "INSERT OR REPLACE INTO listing_price_history VALUES (?,?,?)",
+                (row.listing_no, today, row.price),
+            )
+            times = conn.execute(
+                "SELECT COUNT(*) - 1 FROM listing_price_history WHERE listing_no = ?",
+                (row.listing_no,),
+            ).fetchone()[0]
+            days = (_date.fromisoformat(today)
+                    - _date.fromisoformat(prior["last_seen"])).days
+            changes.append(PriceChange(row.listing_no, row.name,
+                                       prior["price"], row.price, days, times))
+
+        conn.execute(
+            """UPDATE listings SET price = ?, features = ?, prev_jeonse = ?, gap = ?,
+                   gap_ratio = ?, last_seen = ? WHERE listing_no = ?""",
+            (row.price, row.features, row.prev_jeonse, row.gap, row.gap_ratio,
+             today, row.listing_no),
+        )
+
+    gone = conn.execute(
+        "SELECT * FROM listings WHERE area_name = ? AND last_seen < ? "
+        "AND last_seen >= DATE(?, '-7 days')",
+        (area_name, today, today),
+    ).fetchall()
+
+    conn.commit()
+
+    counts_rows = conn.execute(
+        "SELECT area_name, deal_type, COUNT(*) AS n FROM listings "
+        "WHERE last_seen = ? GROUP BY 1, 2",
+        (today,),
+    ).fetchall()
+    counts = {(r["area_name"], r["deal_type"]): r["n"] for r in counts_rows}
+
+    return ListingDiff(new=new, gone=gone, price_changes=changes, counts=counts)
+
+
+def listing_counts(conn, area_name: str, on: str) -> dict[str, int]:
+    rows = conn.execute(
+        "SELECT deal_type, COUNT(*) AS n FROM listings "
+        "WHERE area_name = ? AND last_seen = ? GROUP BY 1",
+        (area_name, on),
+    ).fetchall()
+    return {r["deal_type"]: r["n"] for r in rows}
