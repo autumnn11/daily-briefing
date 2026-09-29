@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 import argparse
 import logging
@@ -6,11 +6,13 @@ import sys
 import time
 
 from src.collect_kor import KorApiError, collect_all
+from src.collect_naver import collect_all as collect_naver_all
 from src.config import load_env, load_watchlist
 from src.judge import badges, judge_price
 from src.notify import Summary, build_blocks, post
 from src.render import build_context, html_to_png, write_html
-from src.store import init_db, log_run, max_floor, upsert_trades
+from src.store import (init_db, listing_counts, log_run, max_floor,
+                       upsert_listings, upsert_trades)
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +52,45 @@ def _card(conn, r, today) -> dict:
     }
 
 
+def build_listing_rows(conn, area_name: str, rows, diff, today: date,
+                       prev: dict[str, int]) -> tuple[list[dict], list[dict]]:
+    """한 구역의 호가 동향 행과 가격 조정 행을 만든다.
+
+    prev(어제 거래유형별 매물 수)는 반드시 upsert_listings 호출 **전에** 재어
+    넘겨야 한다. upsert 가 살아남은 매물의 last_seen 을 오늘로 밀어버려서,
+    나중에 재면 어제 수가 '오늘 사라진 매물 수'로 쪼그라든다.
+    """
+    now = listing_counts(conn, area_name, today.isoformat())
+
+    sections: list[dict] = []
+    for deal_type, count in sorted(now.items()):
+        before = prev.get(deal_type, 0)
+        delta = count - before
+        lows = [r.price for r in rows if r.deal_type == deal_type]
+        sections.append({
+            "area_name": area_name,
+            "deal_type": deal_type,
+            "count": count,
+            "prev": before,
+            "delta_text": f"{delta:+d}" if delta else "―",
+            "new": sum(1 for r in diff.new if r.deal_type == deal_type),
+            "gone": sum(1 for r in diff.gone if r["deal_type"] == deal_type),
+            "low_text": _money(min(lows)) if lows else "―",
+        })
+
+    changes = [{
+        "name": c.name,
+        "down": c.now < c.prev,
+        "delta_text": f"{(c.now - c.prev) / c.prev * 100:+.1f}%",
+        "prev_text": _money(c.prev),
+        "now_text": _money(c.now),
+        "days": c.days,
+        "times": c.times,
+    } for c in diff.price_changes]
+
+    return sections, changes
+
+
 def run(today: date, db_path: Path, watchlist_path: Path,
         env: dict, dry_run: bool = False) -> Summary:
     today_s = today.isoformat()
@@ -71,6 +112,31 @@ def run(today: date, db_path: Path, watchlist_path: Path,
 
     counts = {"신규신고": len(new_trades), "계약파기": len(released)}
 
+    listing_rows: list[dict] = []
+    change_rows: list[dict] = []
+    n_new = n_gone = n_chg = 0
+
+    if targets:
+        t3 = time.monotonic()
+        by_area, naver_warns = collect_naver_all(targets)
+        warnings.extend(naver_warns)
+        yesterday = (today - timedelta(days=1)).isoformat()
+        for area_name, rows in by_area.items():
+            prev = listing_counts(conn, area_name, yesterday)
+            d = upsert_listings(conn, rows, area_name, today_s)
+            n_new += len(d.new)
+            n_gone += len(d.gone)
+            n_chg += len(d.price_changes)
+            sections, changes = build_listing_rows(conn, area_name, rows, d, today, prev)
+            listing_rows.extend(sections)
+            change_rows.extend(changes)
+        log_run(conn, "naver", not naver_warns, n_new + n_chg,
+                time.monotonic() - t3, "; ".join(naver_warns) or None)
+
+    counts.update({"신규매물": n_new, "소멸매물": n_gone, "가격조정": n_chg})
+    counts = {k: counts.get(k, 0) for k in
+              ("신규신고", "신규매물", "소멸매물", "가격조정", "계약파기")}
+
     if not targets:
         headline = "감시 대상이 없습니다. watchlist.yml을 채워주세요."
     elif new_trades:
@@ -90,7 +156,9 @@ def run(today: date, db_path: Path, watchlist_path: Path,
     try:
         cards = [_card(conn, r, today)
                  for r in sorted(new_trades, key=lambda r: r.price, reverse=True)]
-        ctx = build_context(today, headline, counts, cards, warnings)
+        ctx = build_context(today, headline, counts, cards, warnings,
+                            listing_sections=listing_rows,
+                            price_changes=change_rows)
         html_path = write_html(ctx, Path("briefings"))
         png_path = html_to_png(html_path, html_path.with_suffix(".png"))
         log_run(conn, "render", True, len(cards), time.monotonic() - t2, None)
