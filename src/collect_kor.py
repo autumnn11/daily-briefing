@@ -1,6 +1,7 @@
 from datetime import date
 from xml.etree import ElementTree as ET
 import logging
+import re
 import time
 
 import requests
@@ -18,8 +19,21 @@ ENDPOINTS = {
 }
 
 
+_KEY_RE = re.compile(r"(serviceKey=)[^&\s]*", re.IGNORECASE)
+
+
 class KorApiError(Exception):
     pass
+
+
+def _redact(msg: str) -> str:
+    """로그·예외 메시지에서 인증키를 가린다.
+
+    requests 는 파라미터를 URL에 실어 보내고 raise_for_status() 메시지에
+    그 URL을 통째로 넣는다. 그대로 로깅하면 작업 스케줄러가 남기는
+    run.log 에 인증키가 평문으로 쌓인다.
+    """
+    return _KEY_RE.sub(r"\1***", str(msg))
 
 
 def recent_deal_ymds(today: date, months: int = 3) -> list[str]:
@@ -123,7 +137,8 @@ def fetch_trades(api_key: str, lawd_cd: str, deal_ymd: str, asset: str,
             return parse_trades(r.text, lawd_cd, asset)
         except (requests.RequestException, KorApiError) as e:
             last = e
-            log.warning("국토부 호출 실패 (%s/3 %s %s): %s", attempt + 1, lawd_cd, deal_ymd, e)
+            log.warning("국토부 호출 실패 (%s/3 %s %s): %s",
+                        attempt + 1, lawd_cd, deal_ymd, _redact(e))
             if attempt < 2:
                 time.sleep(2 ** attempt)
     raise KorApiError(f"{lawd_cd} {deal_ymd} {asset} 3회 실패") from last

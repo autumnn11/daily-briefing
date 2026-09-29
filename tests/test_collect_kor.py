@@ -74,3 +74,21 @@ def test_금액이_깨진_항목은_건너뛰고_나머지는_살린다():
     rows = parse_trades(xml, lawd_cd="11290", asset="APT")
     assert len(rows) == 1
     assert rows[0].complex_name == "래미안장위"
+
+
+def test_로그_메시지에서_인증키를_가린다():
+    from src.collect_kor import _redact
+
+    msg = ("401 Client Error: Unauthorized for url: "
+           "https://apis.data.go.kr/1613000/X/getX?serviceKey=SECRET%2Fkey%3D%3D"
+           "&LAWD_CD=11290&DEAL_YMD=202609")
+    out = _redact(msg)
+    assert "SECRET" not in out
+    assert "serviceKey=***" in out
+    assert "LAWD_CD=11290" in out
+
+
+def test_인증키가_없는_메시지는_그대로_둔다():
+    from src.collect_kor import _redact
+
+    assert _redact("타임아웃") == "타임아웃"
