@@ -7,6 +7,7 @@ import time
 
 from src.collect_kor import KorApiError, collect_all
 from src.config import load_env, load_watchlist
+from src.judge import judge_price
 from src.notify import Summary, build_blocks, post
 from src.store import init_db, log_run, upsert_trades
 
@@ -23,9 +24,17 @@ def _money(won: int) -> str:
     return f"{man:,}만"
 
 
+TAG = {"신고가": ":arrow_up: 신고가", "하락": ":arrow_down:",
+       "보합": "보합", "표본부족": "비교 표본 부족"}
+
+
 def _line(conn, r, today) -> str:
+    v = judge_price(conn, r)
+    tag = TAG[v.kind]
+    if v.kind == "하락":
+        tag = f"{tag} {v.pct}%"
     return (f"• {r.complex_name} 전용 {r.area:.1f} {r.floor}층 — "
-            f"{_money(r.price)} (계약 {r.deal_date})")
+            f"{_money(r.price)} {tag} (계약 {r.deal_date})")
 
 
 def run(today: date, db_path: Path, watchlist_path: Path,
