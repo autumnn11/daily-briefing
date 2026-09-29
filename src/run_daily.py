@@ -9,6 +9,7 @@ from src.collect_kor import KorApiError, collect_all
 from src.config import load_env, load_watchlist
 from src.judge import badges, judge_price
 from src.notify import Summary, build_blocks, post
+from src.render import build_context, html_to_png, write_html
 from src.store import init_db, log_run, max_floor, upsert_trades
 
 log = logging.getLogger(__name__)
@@ -37,6 +38,16 @@ def _line(conn, r, today) -> str:
     suffix = f" `{' · '.join(bs)}`" if bs else ""
     return (f"• {r.complex_name} 전용 {r.area:.1f} {r.floor}층 — "
             f"{_money(r.price)} {tag} (계약 {r.deal_date}){suffix}")
+
+
+def _card(conn, r, today) -> dict:
+    v = judge_price(conn, r)
+    return {
+        "complex_name": r.complex_name, "area": r.area, "floor": r.floor,
+        "price_text": _money(r.price), "verdict": v.kind, "pct": v.pct,
+        "badges": badges(r, max_floor(conn, r.complex_name), today),
+        "deal_date": r.deal_date,
+    }
 
 
 def run(today: date, db_path: Path, watchlist_path: Path,
@@ -74,13 +85,28 @@ def run(today: date, db_path: Path, watchlist_path: Path,
     lines += [f"• :x: 파기 — {r.complex_name} {_money(r.price)} ({r.released_date})"
               for r in released]
 
+    png_path = None
+    t2 = time.monotonic()
+    try:
+        cards = [_card(conn, r, today)
+                 for r in sorted(new_trades, key=lambda r: r.price, reverse=True)]
+        ctx = build_context(today, headline, counts, cards, warnings)
+        html_path = write_html(ctx, Path("briefings"))
+        png_path = html_to_png(html_path, html_path.with_suffix(".png"))
+        log_run(conn, "render", True, len(cards), time.monotonic() - t2, None)
+    except Exception as e:
+        log.exception("렌더 실패")
+        png_path = None
+        warnings.append("이미지 렌더 실패 — 텍스트만 보냅니다")
+        log_run(conn, "render", False, 0, time.monotonic() - t2, str(e))
+
     summary = Summary(headline=headline, counts=counts, lines=lines, warnings=warnings)
 
     if not dry_run:
         t1 = time.monotonic()
         try:
             post(env["SLACK_BOT_TOKEN"], env["SLACK_CHANNEL"],
-                 build_blocks(summary, today_s), headline)
+                 build_blocks(summary, today_s), headline, png_path=png_path)
             log_run(conn, "slack", True, len(lines), time.monotonic() - t1, None)
         except Exception as e:
             log.exception("Slack 발송 실패")
