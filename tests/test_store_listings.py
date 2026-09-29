@@ -41,7 +41,7 @@ def test_가격이_내리면_조정으로_잡힌다(conn):
     assert len(d.price_changes) == 1
     c = d.price_changes[0]
     assert c.prev == 380_000_000 and c.now == 360_000_000
-    assert c.days == 3
+    assert c.days == 31          # 등록일 2026-09-01 기준 경과일 (리뷰 I9)
     assert c.times == 1
 
 

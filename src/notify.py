@@ -27,9 +27,11 @@ def build_blocks(summary: Summary, target_date: str) -> list[dict]:
                        "elements": [{"type": "mrkdwn", "text": f":warning: {w}"}]})
 
     if not any(summary.counts.values()):
-        blocks.append({"type": "section",
-                       "text": {"type": "mrkdwn",
-                                "text": "오늘은 조용합니다. 새로 올라온 건이 없습니다."}})
+        # 경고가 있으면 0건은 "조용한 날"이 아니라 "못 본 날"이다.
+        text = ("수집에 실패해 오늘 변동을 확인하지 못했습니다. 위 경고를 확인하세요."
+                if summary.warnings
+                else "오늘은 조용합니다. 새로 올라온 건이 없습니다.")
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": text}})
         return blocks[:MAX_BLOCKS]
 
     blocks.append({"type": "section",

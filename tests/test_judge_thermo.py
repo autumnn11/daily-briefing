@@ -60,7 +60,9 @@ def test_평당가를_계산한다(conn):
 
 
 def test_1년_최고가_대비를_계산한다(conn):
-    upsert_trades(conn, [t(800_000_000, "2026-02-01"), t(700_000_000, "2026-09-05")],
+    # 표본이 MIN_SAMPLE 이상일 때만 전고점 대비를 말한다 (리뷰 I7)
+    upsert_trades(conn, [t(800_000_000, "2026-02-01"), t(750_000_000, "2026-04-01"),
+                         t(700_000_000, "2026-09-05")],
                   today="2026-09-29")
     th = thermometer(conn, target(), TODAY)
     assert th.from_high_pct == pytest.approx(-12.5, abs=0.1)

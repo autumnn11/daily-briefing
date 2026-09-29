@@ -33,7 +33,7 @@ def a_trade(**kw) -> TradeRow:
 
 
 def test_신규건이_요약에_들어간다(tmp_path, wl, monkeypatch):
-    monkeypatch.setattr("src.run_daily.collect_all", lambda *a, **k: [a_trade()])
+    monkeypatch.setattr("src.run_daily.collect_all", lambda *a, **k: ([a_trade()], []))
     s = run(date(2026, 9, 29), tmp_path / "d.db", wl, {"KOR_API_KEY": "x"}, dry_run=True)
     assert s.counts["신규신고"] == 1
     assert s.warnings == []
@@ -51,13 +51,13 @@ def test_국토부_실패해도_브리핑은_나간다(tmp_path, wl, monkeypatch
 def test_감시대상이_없으면_그렇게_말한다(tmp_path, monkeypatch):
     empty = tmp_path / "empty.yml"
     empty.write_text("", encoding="utf-8")
-    monkeypatch.setattr("src.run_daily.collect_all", lambda *a, **k: [])
+    monkeypatch.setattr("src.run_daily.collect_all", lambda *a, **k: ([], []))
     s = run(date(2026, 9, 29), tmp_path / "d.db", empty, {"KOR_API_KEY": "x"}, dry_run=True)
     assert "감시 대상" in s.headline
 
 
 def test_실행이_runs에_기록된다(tmp_path, wl, monkeypatch):
-    monkeypatch.setattr("src.run_daily.collect_all", lambda *a, **k: [a_trade()])
+    monkeypatch.setattr("src.run_daily.collect_all", lambda *a, **k: ([a_trade()], []))
     db = tmp_path / "d.db"
     run(date(2026, 9, 29), db, wl, {"KOR_API_KEY": "x"}, dry_run=True)
     conn = init_db(db)
@@ -66,7 +66,7 @@ def test_실행이_runs에_기록된다(tmp_path, wl, monkeypatch):
 
 
 def test_같은_날_두번_돌리면_두번째는_신규가_0(tmp_path, wl, monkeypatch):
-    monkeypatch.setattr("src.run_daily.collect_all", lambda *a, **k: [a_trade()])
+    monkeypatch.setattr("src.run_daily.collect_all", lambda *a, **k: ([a_trade()], []))
     db = tmp_path / "d.db"
     run(date(2026, 9, 29), db, wl, {"KOR_API_KEY": "x"}, dry_run=True)
     s = run(date(2026, 9, 29), db, wl, {"KOR_API_KEY": "x"}, dry_run=True)
@@ -75,10 +75,10 @@ def test_같은_날_두번_돌리면_두번째는_신규가_0(tmp_path, wl, monk
 
 def test_파기건이_요약에_들어간다(tmp_path, wl, monkeypatch):
     db = tmp_path / "d.db"
-    monkeypatch.setattr("src.run_daily.collect_all", lambda *a, **k: [a_trade()])
+    monkeypatch.setattr("src.run_daily.collect_all", lambda *a, **k: ([a_trade()], []))
     run(date(2026, 9, 29), db, wl, {"KOR_API_KEY": "x"}, dry_run=True)
     monkeypatch.setattr("src.run_daily.collect_all",
-                        lambda *a, **k: [a_trade(released=True, released_date="2026-09-28")])
+                        lambda *a, **k: ([a_trade(released=True, released_date="2026-09-28")], []))
     s = run(date(2026, 9, 30), db, wl, {"KOR_API_KEY": "x"}, dry_run=True)
     assert s.counts["계약파기"] == 1
 

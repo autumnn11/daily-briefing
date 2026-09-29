@@ -5,7 +5,7 @@ import logging
 import sys
 import time
 
-from src.collect_kor import KorApiError, collect_all
+from src.collect_kor import KorApiError, collect_all, filter_by_watchlist
 from src.collect_naver import collect_all as collect_naver_all
 from src.config import load_env, load_watchlist
 from src.judge import badges, judge_price, thermometer
@@ -36,7 +36,7 @@ def _line(conn, r, today) -> str:
     tag = TAG[v.kind]
     if v.kind == "하락":
         tag = f"{tag} {v.pct}%"
-    bs = badges(r, max_floor(conn, r.complex_name), today)
+    bs = badges(r, max_floor(conn, r.lawd_cd, r.dong, r.complex_name), today)
     suffix = f" `{' · '.join(bs)}`" if bs else ""
     return (f"• {r.complex_name} 전용 {r.area:.1f} {r.floor}층 — "
             f"{_money(r.price)} {tag} (계약 {r.deal_date}){suffix}")
@@ -47,7 +47,7 @@ def _card(conn, r, today) -> dict:
     return {
         "complex_name": r.complex_name, "area": r.area, "floor": r.floor,
         "price_text": _money(r.price), "verdict": v.kind, "pct": v.pct,
-        "badges": badges(r, max_floor(conn, r.complex_name), today),
+        "badges": badges(r, max_floor(conn, r.lawd_cd, r.dong, r.complex_name), today),
         "deal_date": r.deal_date,
     }
 
@@ -63,7 +63,8 @@ def build_listing_rows(conn, area_name: str, rows, diff, today: date,
     now = listing_counts(conn, area_name, today.isoformat())
 
     sections: list[dict] = []
-    for deal_type, count in sorted(now.items()):
+    for deal_type in sorted(set(now) | set(prev)):
+        count = now.get(deal_type, 0)
         before = prev.get(deal_type, 0)
         delta = count - before
         lows = [r.price for r in rows if r.deal_type == deal_type]
@@ -81,7 +82,8 @@ def build_listing_rows(conn, area_name: str, rows, diff, today: date,
     changes = [{
         "name": c.name,
         "down": c.now < c.prev,
-        "delta_text": f"{(c.now - c.prev) / c.prev * 100:+.1f}%",
+        "delta_text": (f"{(c.now - c.prev) / c.prev * 100:+.1f}%" if c.prev
+                       else f"{(c.now - c.prev) // 10_000:+,}만"),
         "prev_text": _money(c.prev),
         "now_text": _money(c.now),
         "days": c.days,
@@ -92,20 +94,40 @@ def build_listing_rows(conn, area_name: str, rows, diff, today: date,
 
 
 def run(today: date, db_path: Path, watchlist_path: Path,
-        env: dict, dry_run: bool = False) -> Summary:
+        env: dict, dry_run: bool = False, today_is: date | None = None) -> Summary:
+    """하루치 브리핑을 만들고 보낸다.
+
+    today_is 는 "실제 오늘"이다. today 가 그보다 과거면 재렌더 모드로 돌아
+    수집을 하지 않는다 (과거 날짜로 수집하면 오늘 데이터를 그 날짜로 적재하고
+    listings.last_seen 을 거꾸로 밀어 다음 실행의 전일 집계를 망가뜨린다).
+    """
     today_s = today.isoformat()
+    actual_today = today_is or date.today()
+    replay = today < actual_today
     conn = init_db(db_path)
-    targets = load_watchlist(watchlist_path)
     warnings: list[str] = []
+
+    try:
+        targets = load_watchlist(watchlist_path)
+    except Exception as e:
+        targets = []
+        warnings.append(f"watchlist 읽기 실패 — {e}")
+        log.exception("watchlist 읽기 실패")
 
     new_trades, released = [], []
     t0 = time.monotonic()
-    if targets:
+    if targets and not replay:
         try:
-            rows = collect_all(env.get("KOR_API_KEY", ""), targets, today)
+            rows, kor_warns = collect_all(env.get("KOR_API_KEY", ""), targets, today)
+            warnings.extend(kor_warns)
             diff = upsert_trades(conn, rows, today_s)
-            new_trades, released = diff.new, diff.released
-            log_run(conn, "kor_api", True, len(rows), time.monotonic() - t0, None)
+            # 지방 대상은 온도계(누적 지표)로만 쓴다. 수도권 상세 카드에 섞이면
+            # 대전 거래가 "수도권 상세"에 뜨고 헤드라인까지 가져간다.
+            seoul = [t for t in targets if t.region == "수도권"]
+            new_trades = filter_by_watchlist(diff.new, seoul)
+            released = filter_by_watchlist(diff.released, seoul)
+            log_run(conn, "kor_api", not kor_warns, len(rows),
+                    time.monotonic() - t0, "; ".join(kor_warns) or None)
         except KorApiError as e:
             warnings.append(f"국토부 수집 실패 — {e}")
             log_run(conn, "kor_api", False, 0, time.monotonic() - t0, str(e))
@@ -116,7 +138,7 @@ def run(today: date, db_path: Path, watchlist_path: Path,
     change_rows: list[dict] = []
     n_new = n_gone = n_chg = 0
 
-    if targets:
+    if targets and not replay:
         t3 = time.monotonic()
         by_area, naver_warns = collect_naver_all(targets)
         warnings.extend(naver_warns)
@@ -137,7 +159,9 @@ def run(today: date, db_path: Path, watchlist_path: Path,
     counts = {k: counts.get(k, 0) for k in
               ("신규신고", "신규매물", "소멸매물", "가격조정", "계약파기")}
 
-    if not targets:
+    if replay:
+        headline = f"{today_s} 브리핑 다시 렌더 (수집 없음)"
+    elif not targets:
         headline = "감시 대상이 없습니다. watchlist.yml을 채워주세요."
     elif new_trades:
         top = max(new_trades, key=lambda r: r.price)
@@ -185,6 +209,7 @@ def run(today: date, db_path: Path, watchlist_path: Path,
     summary = Summary(headline=headline, counts=counts, lines=lines, warnings=warnings)
 
     if not dry_run:
+        _send_backlog(conn, env, today_s)
         t1 = time.monotonic()
         try:
             post(env["SLACK_BOT_TOKEN"], env["SLACK_CHANNEL"],
@@ -195,6 +220,37 @@ def run(today: date, db_path: Path, watchlist_path: Path,
             log_run(conn, "slack", False, 0, time.monotonic() - t1, str(e))
 
     return summary
+
+
+def _send_backlog(conn, env: dict, today_s: str) -> None:
+    """지난 실행에서 Slack 발송이 실패한 날이 있으면 먼저 보낸다 (스펙 9절).
+
+    실패한 날의 브리핑이 그냥 사라지면 안 된다. runs 테이블에서 발송 성공
+    기록이 없는 과거 날짜를 찾아 남아 있는 PNG 와 함께 다시 보낸다.
+    """
+    rows = conn.execute(
+        """SELECT DISTINCT date(ran_at) AS d FROM runs
+            WHERE stage = 'slack' AND ok = 0 AND date(ran_at) < ?
+              AND date(ran_at) NOT IN (
+                  SELECT date(ran_at) FROM runs WHERE stage = 'slack' AND ok = 1)
+            ORDER BY d""",
+        (today_s,),
+    ).fetchall()
+
+    for row in rows:
+        day = row["d"]
+        png = Path("briefings") / f"{day}.png"
+        try:
+            post(env["SLACK_BOT_TOKEN"], env["SLACK_CHANNEL"],
+                 [{"type": "section",
+                   "text": {"type": "mrkdwn",
+                            "text": f"*{day} 브리핑* (발송이 밀려 지금 보냅니다)"}}],
+                 f"{day} 브리핑 (밀린 발송)",
+                 png_path=png if png.exists() else None)
+            log_run(conn, "slack", True, 0, 0.0, f"backlog {day}")
+        except Exception as e:
+            log.warning("밀린 발송 재시도 실패 (%s): %s", day, e)
+            return
 
 
 def _configure_streams(*streams) -> None:

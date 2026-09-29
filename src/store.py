@@ -131,24 +131,42 @@ def upsert_trades(conn: sqlite3.Connection, rows: list[TradeRow], today: str) ->
     return TradeDiff(new=new, released=released, total=total)
 
 
-def recent_trades(conn, complex_name: str, area: float, before: str, days: int) -> list[sqlite3.Row]:
+def recent_trades(conn, lawd_cd: str, dong: str, complex_name: str,
+                  area: float, before: str, days: int) -> list[sqlite3.Row]:
+    """같은 단지·같은 전용면적의 과거 거래.
+
+    단지 식별은 (lawd_cd, dong, complex_name) 셋 다 써야 한다. 이름만 쓰면
+    성북구 래미안과 대전 래미안이 같은 단지로 묶여 신고가·하락이 엉뚱하게 나온다.
+    """
     return conn.execute(
         """SELECT price, floor, deal_date FROM trades
-            WHERE complex_name = ?
+            WHERE lawd_cd = ? AND dong = ? AND complex_name = ?
               AND ROUND(area, 2) = ROUND(?, 2)
               AND deal_date < ?
               AND deal_date >= DATE(?, ?)
               AND released = 0
             ORDER BY price DESC""",
-        (complex_name, area, before, before, f"-{days} days"),
+        (lawd_cd, dong, complex_name, area, before, before, f"-{days} days"),
     ).fetchall()
 
 
-def max_floor(conn, complex_name: str) -> int | None:
+MIN_FLOOR_SAMPLE = 5
+
+
+def max_floor(conn, lawd_cd: str, dong: str, complex_name: str) -> int | None:
+    """단지의 관측 최고층. 표본이 적으면 None.
+
+    거래 1~2건으로 최고층을 단정하면 그 단지의 첫 거래마다 '최상층' 뱃지가
+    잘못 붙는다. 뱃지가 가격 해석을 바꾸므로 모를 때는 말하지 않는다.
+    """
     row = conn.execute(
-        "SELECT MAX(floor) AS f FROM trades WHERE complex_name = ?", (complex_name,)
+        """SELECT MAX(floor) AS f, COUNT(DISTINCT floor) AS n FROM trades
+            WHERE lawd_cd = ? AND dong = ? AND complex_name = ? AND floor IS NOT NULL""",
+        (lawd_cd, dong, complex_name),
     ).fetchone()
-    return row["f"] if row and row["f"] is not None else None
+    if not row or row["f"] is None or row["n"] < MIN_FLOOR_SAMPLE:
+        return None
+    return row["f"]
 
 
 def log_run(conn, stage: str, ok: bool, count: int, secs: float, err: str | None) -> None:
@@ -184,7 +202,8 @@ def upsert_listings(conn, rows: list[ListingRow], area_name: str, today: str) ->
 
     for row in rows:
         prior = conn.execute(
-            "SELECT price, last_seen FROM listings WHERE listing_no = ?",
+            "SELECT price, last_seen, first_seen, listed_date FROM listings "
+            "WHERE listing_no = ?",
             (row.listing_no,),
         ).fetchone()
 
@@ -214,8 +233,8 @@ def upsert_listings(conn, rows: list[ListingRow], area_name: str, today: str) ->
                 "SELECT COUNT(*) - 1 FROM listing_price_history WHERE listing_no = ?",
                 (row.listing_no,),
             ).fetchone()[0]
-            days = (_date.fromisoformat(today)
-                    - _date.fromisoformat(prior["last_seen"])).days
+            origin = prior["listed_date"] or prior["first_seen"]
+            days = (_date.fromisoformat(today) - _date.fromisoformat(origin)).days
             changes.append(PriceChange(row.listing_no, row.name,
                                        prior["price"], row.price, days, times))
 
@@ -227,9 +246,8 @@ def upsert_listings(conn, rows: list[ListingRow], area_name: str, today: str) ->
         )
 
     gone = conn.execute(
-        "SELECT * FROM listings WHERE area_name = ? AND last_seen < ? "
-        "AND last_seen >= DATE(?, '-7 days')",
-        (area_name, today, today),
+        "SELECT * FROM listings WHERE area_name = ? AND last_seen = DATE(?, '-1 day')",
+        (area_name, today),
     ).fetchall()
 
     conn.commit()
@@ -245,9 +263,15 @@ def upsert_listings(conn, rows: list[ListingRow], area_name: str, today: str) ->
 
 
 def listing_counts(conn, area_name: str, on: str) -> dict[str, int]:
+    """그 날짜에 살아 있던 매물 수를 거래유형별로.
+
+    last_seen == on 으로 세면 안 된다. upsert 가 살아남은 매물의 last_seen 을
+    오늘로 밀어버리므로, 같은 날 두 번 돌리면 어제 수가 0으로 쪼그라든다.
+    생존 구간(first_seen <= on <= last_seen)으로 세면 그 영향을 받지 않는다.
+    """
     rows = conn.execute(
         "SELECT deal_type, COUNT(*) AS n FROM listings "
-        "WHERE area_name = ? AND last_seen = ? GROUP BY 1",
-        (area_name, on),
+        "WHERE area_name = ? AND first_seen <= ? AND last_seen >= ? GROUP BY 1",
+        (area_name, on, on),
     ).fetchall()
     return {r["deal_type"]: r["n"] for r in rows}

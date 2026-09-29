@@ -71,10 +71,22 @@ def conn(tmp_path):
 
 
 def test_max_floor는_단지의_최고층을_돌려준다(conn):
-    upsert_trades(conn, [t(floor=3), t(floor=25, price=1), t(floor=10, price=2)],
+    # 표본이 MIN_FLOOR_SAMPLE 이상이어야 최고층을 단정한다 (리뷰 I8)
+    upsert_trades(conn, [t(floor=f, price=10_000_000 * f) for f in (3, 10, 14, 20, 25)],
                   today="2026-09-29")
-    assert max_floor(conn, "래미안장위") == 25
+    assert max_floor(conn, "11290", "장위동", "래미안장위") == 25
+
+
+def test_표본이_적으면_max_floor가_None(conn):
+    upsert_trades(conn, [t(floor=3), t(floor=25, price=1)], today="2026-09-29")
+    assert max_floor(conn, "11290", "장위동", "래미안장위") is None
 
 
 def test_거래가_없는_단지는_max_floor가_None(conn):
-    assert max_floor(conn, "없는단지") is None
+    assert max_floor(conn, "11290", "장위동", "없는단지") is None
+
+
+def test_다른_시군구의_같은_이름은_안_섞인다(conn):
+    upsert_trades(conn, [t(floor=f, price=10_000_000 * f) for f in (3, 10, 14, 20, 25)],
+                  today="2026-09-29")
+    assert max_floor(conn, "30170", "둔산동", "래미안장위") is None

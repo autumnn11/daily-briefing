@@ -33,7 +33,7 @@ def L(**kw) -> ListingRow:
 
 @pytest.fixture(autouse=True)
 def no_kor(monkeypatch):
-    monkeypatch.setattr("src.run_daily.collect_all", lambda *a, **k: [])
+    monkeypatch.setattr("src.run_daily.collect_all", lambda *a, **k: ([], []))
 
 
 def test_신규매물이_카운트에_들어간다(tmp_path, wl, monkeypatch):
@@ -124,5 +124,5 @@ def test_가격조정_행에_방향과_누적이_담긴다(tmp_path):
     c = changes[0]
     assert c["down"] is True
     assert c["delta_text"] == "-5.3%"
-    assert c["days"] == 3
+    assert c["days"] == 31       # 등록일 2026-09-01 기준 경과일 (리뷰 I9)
     assert c["times"] == 1

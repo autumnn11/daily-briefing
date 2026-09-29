@@ -74,6 +74,7 @@
     </div>
     {% endfor %}
   </div>
+  {% elif warnings %}<div class="quiet">수집에 실패해 오늘 변동을 확인하지 못했습니다. 위 경고를 확인하세요.</div>
   {% else %}<div class="quiet">오늘은 조용합니다. 새로 올라온 거래가 없습니다.</div>{% endif %}
 </section>
 

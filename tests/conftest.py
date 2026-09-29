@@ -2,7 +2,7 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _stub_external_collectors(monkeypatch):
+def _stub_external_collectors(monkeypatch, request):
     """테스트가 실수로 외부 네트워크를 때리지 못하게 기본 차단한다.
 
     run() 은 국토부 API 와 네이버 스크레이퍼를 둘 다 부른다. 스텁하지 않은
@@ -14,11 +14,12 @@ def _stub_external_collectors(monkeypatch):
     개별 테스트가 monkeypatch.setattr 로 다시 덮어쓰면 그쪽이 이긴다.
     """
     monkeypatch.setattr("src.run_daily.collect_all",
-                        lambda *a, **k: [], raising=False)
+                        lambda *a, **k: ([], []), raising=False)
     monkeypatch.setattr("src.run_daily.collect_naver_all",
                         lambda *a, **k: ({}, []), raising=False)
-    monkeypatch.setattr("src.collect_naver.scrape_target",
-                        _blocked, raising=False)
+    if "allow_scrape_target" not in request.keywords:
+        monkeypatch.setattr("src.collect_naver.scrape_target",
+                            _blocked, raising=False)
 
 
 def _blocked(*args, **kwargs):

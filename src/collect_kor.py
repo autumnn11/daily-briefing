@@ -10,6 +10,9 @@ from src.models import Target, TradeRow
 
 log = logging.getLogger(__name__)
 
+PAGE_SIZE = 1000
+MAX_PAGES = 20
+
 # 태그명은 docs/api-notes.md 기준. 실호출로 확인 후 다르면 _text() 인자만 교체한다.
 ENDPOINTS = {
     "APT": ("https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev"
@@ -86,9 +89,15 @@ def parse_trades(xml_text: str, lawd_cd: str, asset: str) -> list[TradeRow]:
         raise KorApiError(f"국토부 API 오류: {msg}")
 
     code = _text(root, ".//resultCode")
-    if code is not None and code not in ("00", "0"):
-        msg = _text(root, ".//resultMsg") or ""
-        raise KorApiError(f"국토부 API 오류 {code}: {msg}")
+    if code is not None:
+        # 서비스에 따라 성공 코드가 "0" / "00" / "000" 로 제각각이다. 숫자로 본다.
+        try:
+            failed = int(code) != 0
+        except ValueError:
+            failed = True
+        if failed:
+            msg = _text(root, ".//resultMsg") or ""
+            raise KorApiError(f"국토부 API 오류 {code}: {msg}")
 
     name_tag = ENDPOINTS[asset][1]
     rows: list[TradeRow] = []
@@ -122,35 +131,100 @@ def parse_trades(xml_text: str, lawd_cd: str, asset: str) -> list[TradeRow]:
     return rows
 
 
-def fetch_trades(api_key: str, lawd_cd: str, deal_ymd: str, asset: str,
-                 session: requests.Session | None = None) -> list[TradeRow]:
+def _total_count(xml_text: str) -> int | None:
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return None
+    raw = _text(root, ".//totalCount")
+    return int(raw) if raw and raw.isdigit() else None
+
+
+def _fetch_page(api_key, lawd_cd, deal_ymd, asset, page, sess) -> str:
+    """한 페이지를 3회까지 재시도해 본문을 돌려준다."""
     url = ENDPOINTS[asset][0]
-    sess = session or requests.Session()
     last: Exception | None = None
     for attempt in range(3):
         try:
             r = sess.get(url, params={
                 "serviceKey": api_key, "LAWD_CD": lawd_cd,
-                "DEAL_YMD": deal_ymd, "numOfRows": 1000, "pageNo": 1,
+                "DEAL_YMD": deal_ymd, "numOfRows": PAGE_SIZE, "pageNo": page,
             }, timeout=30)
             r.raise_for_status()
-            return parse_trades(r.text, lawd_cd, asset)
-        except (requests.RequestException, KorApiError) as e:
+            return r.text
+        except requests.RequestException as e:
             last = e
-            log.warning("국토부 호출 실패 (%s/3 %s %s): %s",
-                        attempt + 1, lawd_cd, deal_ymd, _redact(e))
+            log.warning("국토부 호출 실패 (%s/3 %s %s p%s): %s",
+                        attempt + 1, lawd_cd, deal_ymd, page, _redact(e))
             if attempt < 2:
                 time.sleep(2 ** attempt)
-    raise KorApiError(f"{lawd_cd} {deal_ymd} {asset} 3회 실패") from last
+    raise KorApiError(
+        f"{lawd_cd} {deal_ymd} {asset} p{page} 3회 실패: {_redact(last)}") from last
 
 
-def collect_all(api_key: str, targets: list[Target], today: date) -> list[TradeRow]:
+def fetch_trades(api_key: str, lawd_cd: str, deal_ymd: str, asset: str,
+                 session: requests.Session | None = None) -> list[TradeRow]:
+    """한 시군구·한 달치를 전부 가져온다 (페이지 끝까지).
+
+    1페이지만 받으면 거래가 많은 달이 조용히 잘리고, 잘린 건이 나중에 순서가
+    바뀌며 올라와 몇 주 뒤 "오늘의 신규"로 둔갑한다.
+    """
+    sess = session or requests.Session()
+    rows: list[TradeRow] = []
+    page = 1
+    while page <= MAX_PAGES:
+        body = _fetch_page(api_key, lawd_cd, deal_ymd, asset, page, sess)
+        rows.extend(parse_trades(body, lawd_cd, asset))
+        total = _total_count(body)
+        if total is None or page * PAGE_SIZE >= total:
+            break
+        page += 1
+    else:
+        log.warning("%s %s %s: %s페이지 상한에 걸렸습니다", lawd_cd, deal_ymd, asset, MAX_PAGES)
+    return rows
+
+
+def filter_by_watchlist(rows: list[TradeRow], targets: list[Target]) -> list[TradeRow]:
+    """관심 대상에 걸리는 거래만 남긴다.
+
+    국토부는 시군구 통째로만 주기 때문에 성북구를 부르면 성북구 전체가 온다.
+    법정동(그리고 단지명이 지정됐으면 단지명)으로 좁히지 않으면 브리핑이
+    관심 없는 수백 건으로 덮인다.
+    """
+    kept: list[TradeRow] = []
+    for row in rows:
+        for t in targets:
+            if t.lawd_cd != row.lawd_cd:
+                continue
+            if t.dongs and row.dong not in t.dongs:
+                continue
+            if t.complex_name and t.complex_name not in row.complex_name:
+                continue
+            kept.append(row)
+            break
+    return kept
+
+
+def collect_all(api_key: str, targets: list[Target],
+                today: date) -> tuple[list[TradeRow], list[str]]:
+    """관심 대상의 최근 3개월 거래를 모은다.
+
+    호출 하나가 실패해도 나머지 성공분은 살린다. 12번 중 마지막 한 번 때문에
+    하루치를 통째로 버리면 브리핑이 사라진다.
+    """
     ymds = recent_deal_ymds(today)
     lawd_cds = sorted({t.lawd_cd for t in targets})
     sess = requests.Session()
     rows: list[TradeRow] = []
+    warnings: list[str] = []
+
     for lawd_cd in lawd_cds:
         for asset in ("APT", "VL"):
             for ymd in ymds:
-                rows.extend(fetch_trades(api_key, lawd_cd, ymd, asset, sess))
-    return rows
+                try:
+                    rows.extend(fetch_trades(api_key, lawd_cd, ymd, asset, sess))
+                except KorApiError as e:
+                    warnings.append(f"국토부 수집 일부 실패 — {lawd_cd} {ymd} {asset}")
+                    log.warning("%s", _redact(e))
+
+    return filter_by_watchlist(rows, targets), warnings

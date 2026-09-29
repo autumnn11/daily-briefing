@@ -24,12 +24,14 @@ def test_경고가_있으면_블록에_들어간다():
     assert "호가 미수집" in json.dumps(blocks, ensure_ascii=False)
 
 
-def test_조용한_날에도_경고는_보인다():
+def test_경고가_있는_0건은_조용한_날이_아니다():
+    """수집 실패를 '조용합니다'로 덮으면 3초 읽는 사람이 그냥 넘어간다 (리뷰 I12)."""
     blocks = build_blocks(
         s(counts={"신규신고": 0}, lines=[], warnings=["국토부 수집 실패"]), "2026-09-29")
     body = json.dumps(blocks, ensure_ascii=False)
     assert "국토부 수집 실패" in body
-    assert "조용" in body
+    assert "조용" not in body
+    assert "확인하지 못했습니다" in body
 
 
 def test_블록이_슬랙_제한인_50개를_넘지_않는다():

@@ -28,7 +28,11 @@ OVERRIDES = {
 
 
 class NaverBlocked(Exception):
-    pass
+    """차단이 명확히 감지됐을 때."""
+
+
+class NaverEmpty(Exception):
+    """수집 결과가 0건. 차단과 구분되지 않으므로 성공으로 치지 않는다."""
 
 
 def _int_or_none(v) -> int | None:
@@ -94,6 +98,28 @@ def newest_xlsx(dirpath: Path) -> Path | None:
     return files[-1] if files else None
 
 
+def _run_scraper(lat: float, lon: float, zoom: int) -> None:
+    """vendor 스크레이퍼를 돌린다. 테스트가 갈아끼우는 이음매."""
+    if str(SCRAPER_DIR) not in sys.path:
+        sys.path.insert(0, str(SCRAPER_DIR))
+    import asyncio
+
+    import scraper_kr
+
+    asyncio.run(scraper_kr.crawl_detailed(lat, lon, zoom))
+
+
+def _apply_overrides(target: Target) -> None:
+    if str(SCRAPER_DIR) not in sys.path:
+        sys.path.insert(0, str(SCRAPER_DIR))
+    import scraper_kr
+
+    for key, value in OVERRIDES.items():
+        setattr(scraper_kr, key, value)
+    if target.asset:
+        scraper_kr.ASSET_TYPES = target.asset
+
+
 def scrape_target(target: Target) -> list[ListingRow]:
     """vendor 스크레이퍼를 한 구역에 대해 돌리고 매물을 읽어온다.
 
@@ -104,30 +130,41 @@ def scrape_target(target: Target) -> list[ListingRow]:
     if target.coord is None:
         return []
 
-    if str(SCRAPER_DIR) not in sys.path:
-        sys.path.insert(0, str(SCRAPER_DIR))
-    import asyncio
-
-    import scraper_kr
-
-    for key, value in OVERRIDES.items():
-        setattr(scraper_kr, key, value)
-    if target.asset:
-        scraper_kr.ASSET_TYPES = target.asset
+    try:
+        _apply_overrides(target)
+    except Exception:  # vendor 미설치 등
+        log.exception("%s: vendor 스크레이퍼를 불러오지 못했습니다", target.name)
+        raise
 
     cwd = os.getcwd()
     with tempfile.TemporaryDirectory() as tmp:
         os.chdir(tmp)
         try:
-            asyncio.run(scraper_kr.crawl_detailed(
-                target.coord.lat, target.coord.lon, target.coord.zoom))
+            crawl_error: Exception | None = None
+            try:
+                _run_scraper(target.coord.lat, target.coord.lon, target.coord.zoom)
+            except Exception as e:  # noqa: BLE001 - vendor 코드의 사후 처리 실패까지 흡수
+                crawl_error = e
+
             found = newest_xlsx(Path(tmp))
             if found is None:
-                log.warning("%s: 스크레이퍼가 xlsx를 만들지 않았습니다 (수집 0건)",
-                            target.name)
-                return []
+                if crawl_error is not None:
+                    raise crawl_error
+                # 결과 0건. 차단인지 진짜 매물 없음인지 구분할 수 없으므로
+                # 성공으로 치면 전날 매물이 전부 소멸로 찍힌다.
+                raise NaverEmpty(f"{target.name}: 수집 0건")
+
+            if crawl_error is not None:
+                # vendor 는 to_excel 뒤 요약 출력에서 죽는 경로가 있다
+                # (갭비율이 전부 None 이면 nsmallest 가 TypeError).
+                # 파일은 이미 온전하므로 버리지 않는다.
+                log.warning("%s: 스크레이퍼가 xlsx 기록 후 실패했습니다 (%s). 결과는 사용합니다.",
+                            target.name, type(crawl_error).__name__)
+
             rows = read_xlsx(found, target.name)
             found.unlink(missing_ok=True)
+            if not rows:
+                raise NaverEmpty(f"{target.name}: 수집 0건")
             return rows
         finally:
             os.chdir(cwd)
@@ -142,11 +179,20 @@ def collect_all(targets: list[Target]) -> tuple[dict[str, list[ListingRow]], lis
         if i:
             time.sleep(random.uniform(5, 15))
         try:
-            result[target.name] = scrape_target(target)
+            rows = scrape_target(target)
+            if not rows:
+                # 어느 경로로 왔든 0건은 성공이 아니다. 결과에 넣으면
+                # upsert 가 전날 매물을 전량 소멸로 찍는다.
+                raise NaverEmpty(f"{target.name}: 수집 0건")
+            result[target.name] = rows
         except NaverBlocked as e:
             warnings.append(f"호가 미수집 — 네이버 차단 ({target.name})")
             log.warning("차단 감지, 재시도하지 않고 중단: %s", e)
             break
+        except NaverEmpty:
+            # 결과에 넣지 않는다. 빈 리스트를 넘기면 전날 매물이 전량 소멸로 찍힌다.
+            warnings.append(f"호가 미수집 — 수집 0건 ({target.name})")
+            log.warning("%s: 수집 0건, 이 구역은 건너뜁니다", target.name)
         except Exception as e:
             warnings.append(f"호가 미수집 — {target.name} ({type(e).__name__})")
             log.exception("네이버 수집 실패: %s", target.name)

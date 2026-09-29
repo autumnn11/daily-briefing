@@ -16,7 +16,8 @@ class Verdict:
 
 
 def judge_price(conn, trade: TradeRow, days: int = 365) -> Verdict:
-    rows = recent_trades(conn, trade.complex_name, trade.area, trade.deal_date, days)
+    rows = recent_trades(conn, trade.lawd_cd, trade.dong, trade.complex_name,
+                         trade.area, trade.deal_date, days)
     if len(rows) < MIN_SAMPLE:
         return Verdict("표본부족", None, None, len(rows))
 
@@ -100,12 +101,20 @@ def thermometer(conn, target, today: date) -> Thermo:
         ).fetchone()[0]
         counts.append((ym, n))
 
+    # 전년 동월 대비는 "작년 그 달 데이터를 실제로 갖고 있을 때"만 말한다.
+    # 빈 비교군을 0건으로 치면 첫 1년 내내 없는 신호를 만들어낸다.
     last_year_ym = f"{today.year - 1:04d}-{today.month:02d}"
-    yoy_prev = conn.execute(
-        f"SELECT COUNT(*) {base} AND substr(deal_date, 1, 7) = ?",
-        params + (last_year_ym,),
-    ).fetchone()[0]
-    yoy = counts[-1][1] - yoy_prev if (counts[-1][1] or yoy_prev) else None
+    oldest = conn.execute(
+        f"SELECT MIN(deal_date) AS d {base}", params
+    ).fetchone()["d"]
+    has_last_year = bool(oldest) and oldest[:7] <= last_year_ym
+    yoy = None
+    if has_last_year:
+        yoy_prev = conn.execute(
+            f"SELECT COUNT(*) {base} AND substr(deal_date, 1, 7) = ?",
+            params + (last_year_ym,),
+        ).fetchone()[0]
+        yoy = counts[-1][1] - yoy_prev
 
     iso = today.isoformat()
     recent = conn.execute(
@@ -131,8 +140,12 @@ def thermometer(conn, target, today: date) -> Thermo:
     last_row = conn.execute(
         f"SELECT price {base} ORDER BY deal_date DESC LIMIT 1", params
     ).fetchone()
+    n_year = conn.execute(
+        f"SELECT COUNT(*) {base} AND deal_date >= DATE(?, '-365 days')",
+        params + (iso,),
+    ).fetchone()[0]
     from_high = None
-    if high_row and high_row["p"] and last_row:
+    if high_row and high_row["p"] and last_row and n_year >= MIN_SAMPLE:
         from_high = round((last_row["price"] - high_row["p"]) / high_row["p"] * 100, 1)
 
     return Thermo(target.name, counts, yoy, pyeong, trend, from_high)
