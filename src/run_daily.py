@@ -8,7 +8,7 @@ import time
 from src.collect_kor import KorApiError, collect_all
 from src.collect_naver import collect_all as collect_naver_all
 from src.config import load_env, load_watchlist
-from src.judge import badges, judge_price
+from src.judge import badges, judge_price, thermometer
 from src.notify import Summary, build_blocks, post
 from src.render import build_context, html_to_png, write_html
 from src.store import (init_db, listing_counts, log_run, max_floor,
@@ -151,6 +151,19 @@ def run(today: date, db_path: Path, watchlist_path: Path,
     lines += [f"• :x: 파기 — {r.complex_name} {_money(r.price)} ({r.released_date})"
               for r in released]
 
+    thermo_rows = []
+    for tgt in [t for t in targets if t.region == "지방"]:
+        th = thermometer(conn, tgt, today)
+        thermo_rows.append({
+            "name": th.name,
+            "recent_counts": " · ".join(f"{ym[5:]}월 {n}건" for ym, n in th.recent_counts),
+            "yoy_text": (f"{th.yoy:+d}건" if th.yoy is not None else "―"),
+            "pyeong_text": (f"{th.pyeong // 10_000:,}만" if th.pyeong else "―"),
+            "trend_text": (f"{th.trend_pct:+.1f}%" if th.trend_pct is not None else "―"),
+            "from_high_text": (f"{th.from_high_pct:+.1f}%"
+                               if th.from_high_pct is not None else "―"),
+        })
+
     png_path = None
     t2 = time.monotonic()
     try:
@@ -158,7 +171,8 @@ def run(today: date, db_path: Path, watchlist_path: Path,
                  for r in sorted(new_trades, key=lambda r: r.price, reverse=True)]
         ctx = build_context(today, headline, counts, cards, warnings,
                             listing_sections=listing_rows,
-                            price_changes=change_rows)
+                            price_changes=change_rows,
+                            thermometer=thermo_rows)
         html_path = write_html(ctx, Path("briefings"))
         png_path = html_to_png(html_path, html_path.with_suffix(".png"))
         log_run(conn, "render", True, len(cards), time.monotonic() - t2, None)
