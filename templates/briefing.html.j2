@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --line:#e3e6ea; --ink:#1a1d21;
+          --muted:#6b7280; --up:#d92d20; --down:#1570ef; --accent:#0f7b6c; }
+  * { box-sizing: border-box; }
+  body { width:1200px; margin:0; padding:0 0 28px; background:var(--bg);
+         font:14px/1.55 "Malgun Gothic","맑은 고딕",system-ui,sans-serif; color:var(--ink); }
+  .hero { background:linear-gradient(100deg,#0f7b6c,#3aa17e); color:#fff; padding:28px 32px; }
+  .hero .kicker { font-size:11px; letter-spacing:.14em; opacity:.85; }
+  .hero h1 { margin:8px 0 6px; font-size:28px; }
+  .hero .sub { font-size:13px; opacity:.92; }
+  .warn { margin:14px 32px 0; padding:10px 14px; border-radius:8px;
+          background:#fff4ed; border:1px solid #fdb022; color:#b54708; font-size:13px; }
+  section { margin:26px 32px 0; }
+  h2 { font-size:15px; margin:0 0 12px; display:flex; align-items:center; gap:8px; }
+  .tag { font-size:10px; letter-spacing:.1em; background:#e7eef0; color:var(--accent);
+         padding:3px 8px; border-radius:4px; }
+  .snap { display:grid; grid-template-columns:repeat(5,1fr); gap:12px; }
+  .snap > div { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; }
+  .snap .k { font-size:12px; color:var(--muted); }
+  .snap .v { font-size:24px; font-weight:700; margin-top:4px; }
+  .cards { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px;
+          padding:14px 16px; border-left:3px solid var(--line); }
+  .card.up { border-left-color:var(--up); }
+  .card.down { border-left-color:var(--down); }
+  .card .t { font-weight:700; }
+  .card .p { font-size:19px; font-weight:700; margin:6px 0 2px; }
+  .up-t { color:var(--up); } .down-t { color:var(--down); }
+  .meta { font-size:12px; color:var(--muted); }
+  .badge { display:inline-block; font-size:11px; background:#eef1f4; color:#475467;
+           border-radius:4px; padding:2px 7px; margin:6px 5px 0 0; }
+  .quiet { background:var(--card); border:1px solid var(--line); border-radius:10px;
+           padding:24px; text-align:center; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; background:var(--card);
+          border:1px solid var(--line); border-radius:10px; overflow:hidden; font-size:13px; }
+  th,td { padding:9px 14px; text-align:left; border-bottom:1px solid var(--line); }
+  th { background:#eef1f4; font-size:11px; color:#475467; letter-spacing:.06em; }
+  tr:last-child td { border-bottom:none; }
+  .foot { margin:26px 32px 0; font-size:11px; color:var(--muted);
+          border-top:1px solid var(--line); padding-top:12px; }
+</style></head><body>
+
+<div class="hero">
+  <div class="kicker">DAILY REAL ESTATE BRIEFING</div>
+  <h1>{{ headline }}</h1>
+  <div class="sub">{{ target_date }} 기준 · 국토부 실거래가 + 네이버 호가</div>
+</div>
+
+{% for w in warnings %}<div class="warn">⚠ {{ w }}</div>{% endfor %}
+
+<section>
+  <h2><span class="tag">SNAPSHOT</span> 오늘의 스냅샷</h2>
+  <div class="snap">
+    {% for k, v in counts.items() %}<div><div class="k">{{ k }}</div><div class="v">{{ v }}</div></div>{% endfor %}
+  </div>
+</section>
+
+<section>
+  <h2><span class="tag">TRADES</span> 수도권 상세</h2>
+  {% if cards %}
+  <div class="cards">
+    {% for c in cards %}
+    <div class="card {% if c.verdict == '신고가' %}up{% elif c.verdict == '하락' %}down{% endif %}">
+      <div class="t">{{ c.complex_name }}</div>
+      <div class="p">{{ c.price_text }}
+        {% if c.verdict == '신고가' %}<span class="up-t">▲ 신고가</span>
+        {% elif c.verdict == '하락' %}<span class="down-t">▼ {{ c.pct }}%</span>
+        {% elif c.verdict == '표본부족' %}<span class="meta">비교 표본 부족</span>{% endif %}
+      </div>
+      <div class="meta">전용 {{ "%.1f"|format(c.area) }}㎡ · {{ c.floor }}층 · 계약 {{ c.deal_date }}</div>
+      {% for b in c.badges %}<span class="badge">{{ b }}</span>{% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+  {% elif warnings %}<div class="quiet">수집에 실패해 오늘 변동을 확인하지 못했습니다. 위 경고를 확인하세요.</div>
+  {% else %}<div class="quiet">오늘은 조용합니다. 새로 올라온 거래가 없습니다.</div>{% endif %}
+</section>
+
+{% if listing_sections %}
+<section>
+  <h2><span class="tag">LISTINGS</span> 호가 동향</h2>
+  <table><tr><th>구역</th><th>거래유형</th><th>매물</th><th>전일</th><th>증감</th><th>신규</th><th>소멸</th><th>최저호가</th></tr>
+  {% for r in listing_sections %}
+  <tr><td>{{ r.area_name }}</td><td>{{ r.deal_type }}</td><td>{{ r.count }}</td><td>{{ r.prev }}</td>
+      <td>{{ r.delta_text }}</td><td>{{ r.new }}</td><td>{{ r.gone }}</td><td>{{ r.low_text }}</td></tr>
+  {% endfor %}</table>
+</section>
+{% endif %}
+
+{% if price_changes %}
+<section>
+  <h2><span class="tag">ADJUST</span> 가격 조정</h2>
+  <table><tr><th>매물</th><th>방향</th><th>변동</th><th>직전</th><th>현재</th><th>경과일</th><th>누적</th></tr>
+  {% for r in price_changes %}
+  <tr><td>{{ r.name }}</td>
+      <td class="{% if r.down %}down-t{% else %}up-t{% endif %}">{{ '▼ 인하' if r.down else '▲ 인상' }}</td>
+      <td>{{ r.delta_text }}</td><td>{{ r.prev_text }}</td><td>{{ r.now_text }}</td>
+      <td>{{ r.days }}일</td><td>{{ r.times }}회</td></tr>
+  {% endfor %}</table>
+</section>
+{% endif %}
+
+{% if thermometer %}
+<section>
+  <h2><span class="tag">REGIONAL</span> 지방 온도계</h2>
+  <table><tr><th>단지</th><th>최근 3개월 거래</th><th>전년 동월</th><th>평당가</th><th>3개월 추세</th><th>1년 최고 대비</th></tr>
+  {% for r in thermometer %}
+  <tr><td>{{ r.name }}</td><td>{{ r.recent_counts }}</td><td>{{ r.yoy_text }}</td>
+      <td>{{ r.pyeong_text }}</td><td>{{ r.trend_text }}</td><td>{{ r.from_high_text }}</td></tr>
+  {% endfor %}</table>
+</section>
+{% endif %}
+
+<div class="foot">본 자료는 국토교통부 실거래가 공개시스템과 공개 매물 정보를 개인 투자 판단 목적으로 정리한 것입니다. 투자의 최종 판단과 책임은 본인에게 있습니다.</div>
+</body></html>
