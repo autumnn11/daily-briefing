@@ -354,7 +354,7 @@ def test_I13_스크레이퍼가_터져도_xlsx가_있으면_살린다(tmp_path, 
 
     xlsx = tmp_path / "매물정보_확장_20260929_080000.xlsx"
 
-    def fake_crawl(lat, lon, zoom):
+    def fake_crawl(target):
         pd.DataFrame([{"매물번호": "1", "매물명": "장위빌라", "거래유형": "매매",
                        "매매 금액(원)": 380000000}]).to_excel(
             Path.cwd() / xlsx.name, index=False, engine="openpyxl")
@@ -372,7 +372,7 @@ def test_I13_스크레이퍼가_터져도_xlsx가_있으면_살린다(tmp_path, 
 def test_I13_xlsx가_아예_없으면_예외가_그대로_올라간다(tmp_path, monkeypatch):
     from src import collect_naver
 
-    def fake_crawl(lat, lon, zoom):
+    def fake_crawl(target):
         raise RuntimeError("브라우저 기동 실패")
 
     monkeypatch.setattr(collect_naver, "_run_scraper", fake_crawl)

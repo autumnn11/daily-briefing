@@ -98,26 +98,25 @@ def newest_xlsx(dirpath: Path) -> Path | None:
     return files[-1] if files else None
 
 
-def _run_scraper(lat: float, lon: float, zoom: int) -> None:
-    """vendor 스크레이퍼를 돌린다. 테스트가 갈아끼우는 이음매."""
+def _run_scraper(target: Target) -> None:
+    """vendor 스크레이퍼를 한 구역에 대해 돌린다. 테스트가 갈아끼우는 이음매.
+
+    상수 덮어쓰기도 여기서 한다. vendor import 를 이 함수 안에 가둬야
+    vendor 가 없는 환경(갓 클론한 저장소)에서도 나머지 로직을 테스트할 수 있다.
+    """
     if str(SCRAPER_DIR) not in sys.path:
         sys.path.insert(0, str(SCRAPER_DIR))
     import asyncio
 
     import scraper_kr
 
-    asyncio.run(scraper_kr.crawl_detailed(lat, lon, zoom))
-
-
-def _apply_overrides(target: Target) -> None:
-    if str(SCRAPER_DIR) not in sys.path:
-        sys.path.insert(0, str(SCRAPER_DIR))
-    import scraper_kr
-
     for key, value in OVERRIDES.items():
         setattr(scraper_kr, key, value)
     if target.asset:
         scraper_kr.ASSET_TYPES = target.asset
+
+    asyncio.run(scraper_kr.crawl_detailed(
+        target.coord.lat, target.coord.lon, target.coord.zoom))
 
 
 def scrape_target(target: Target) -> list[ListingRow]:
@@ -130,19 +129,13 @@ def scrape_target(target: Target) -> list[ListingRow]:
     if target.coord is None:
         return []
 
-    try:
-        _apply_overrides(target)
-    except Exception:  # vendor 미설치 등
-        log.exception("%s: vendor 스크레이퍼를 불러오지 못했습니다", target.name)
-        raise
-
     cwd = os.getcwd()
     with tempfile.TemporaryDirectory() as tmp:
         os.chdir(tmp)
         try:
             crawl_error: Exception | None = None
             try:
-                _run_scraper(target.coord.lat, target.coord.lon, target.coord.zoom)
+                _run_scraper(target)
             except Exception as e:  # noqa: BLE001 - vendor 코드의 사후 처리 실패까지 흡수
                 crawl_error = e
 
