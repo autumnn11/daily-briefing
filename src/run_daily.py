@@ -17,6 +17,11 @@ from src.store import (init_db, listing_counts, log_run, max_floor,
 log = logging.getLogger(__name__)
 
 
+def _today() -> date:
+    """실제 오늘. 테스트가 고정할 수 있도록 함수로 빼 둔다."""
+    return date.today()
+
+
 def _money(won: int) -> str:
     eok, rest = divmod(won, 100_000_000)
     man = rest // 10_000
@@ -102,7 +107,7 @@ def run(today: date, db_path: Path, watchlist_path: Path,
     listings.last_seen 을 거꾸로 밀어 다음 실행의 전일 집계를 망가뜨린다).
     """
     today_s = today.isoformat()
-    actual_today = today_is or date.today()
+    actual_today = today_is or _today()
     replay = today < actual_today
     conn = init_db(db_path)
     warnings: list[str] = []
@@ -127,10 +132,12 @@ def run(today: date, db_path: Path, watchlist_path: Path,
             new_trades = filter_by_watchlist(diff.new, seoul)
             released = filter_by_watchlist(diff.released, seoul)
             log_run(conn, "kor_api", not kor_warns, len(rows),
-                    time.monotonic() - t0, "; ".join(kor_warns) or None)
+                    time.monotonic() - t0, "; ".join(kor_warns) or None,
+                    for_date=today_s)
         except KorApiError as e:
             warnings.append(f"국토부 수집 실패 — {e}")
-            log_run(conn, "kor_api", False, 0, time.monotonic() - t0, str(e))
+            log_run(conn, "kor_api", False, 0, time.monotonic() - t0, str(e),
+                    for_date=today_s)
 
     counts = {"신규신고": len(new_trades), "계약파기": len(released)}
 
@@ -153,7 +160,8 @@ def run(today: date, db_path: Path, watchlist_path: Path,
             listing_rows.extend(sections)
             change_rows.extend(changes)
         log_run(conn, "naver", not naver_warns, n_new + n_chg,
-                time.monotonic() - t3, "; ".join(naver_warns) or None)
+                time.monotonic() - t3, "; ".join(naver_warns) or None,
+                for_date=today_s)
 
     counts.update({"신규매물": n_new, "소멸매물": n_gone, "가격조정": n_chg})
     counts = {k: counts.get(k, 0) for k in
@@ -199,12 +207,14 @@ def run(today: date, db_path: Path, watchlist_path: Path,
                             thermometer=thermo_rows)
         html_path = write_html(ctx, Path("briefings"))
         png_path = html_to_png(html_path, html_path.with_suffix(".png"))
-        log_run(conn, "render", True, len(cards), time.monotonic() - t2, None)
+        log_run(conn, "render", True, len(cards), time.monotonic() - t2, None,
+                for_date=today_s)
     except Exception as e:
         log.exception("렌더 실패")
         png_path = None
         warnings.append("이미지 렌더 실패 — 텍스트만 보냅니다")
-        log_run(conn, "render", False, 0, time.monotonic() - t2, str(e))
+        log_run(conn, "render", False, 0, time.monotonic() - t2, str(e),
+                for_date=today_s)
 
     summary = Summary(headline=headline, counts=counts, lines=lines, warnings=warnings)
 
@@ -214,10 +224,12 @@ def run(today: date, db_path: Path, watchlist_path: Path,
         try:
             post(env["SLACK_BOT_TOKEN"], env["SLACK_CHANNEL"],
                  build_blocks(summary, today_s), headline, png_path=png_path)
-            log_run(conn, "slack", True, len(lines), time.monotonic() - t1, None)
+            log_run(conn, "slack", True, len(lines), time.monotonic() - t1, None,
+                    for_date=today_s)
         except Exception as e:
             log.exception("Slack 발송 실패")
-            log_run(conn, "slack", False, 0, time.monotonic() - t1, str(e))
+            log_run(conn, "slack", False, 0, time.monotonic() - t1, str(e),
+                    for_date=today_s)
 
     return summary
 
@@ -229,10 +241,12 @@ def _send_backlog(conn, env: dict, today_s: str) -> None:
     기록이 없는 과거 날짜를 찾아 남아 있는 PNG 와 함께 다시 보낸다.
     """
     rows = conn.execute(
-        """SELECT DISTINCT date(ran_at) AS d FROM runs
-            WHERE stage = 'slack' AND ok = 0 AND date(ran_at) < ?
-              AND date(ran_at) NOT IN (
-                  SELECT date(ran_at) FROM runs WHERE stage = 'slack' AND ok = 1)
+        """SELECT DISTINCT for_date AS d FROM runs
+            WHERE stage = 'slack' AND ok = 0
+              AND for_date IS NOT NULL AND for_date < ?
+              AND for_date NOT IN (
+                  SELECT for_date FROM runs
+                   WHERE stage = 'slack' AND ok = 1 AND for_date IS NOT NULL)
             ORDER BY d""",
         (today_s,),
     ).fetchall()
@@ -247,7 +261,7 @@ def _send_backlog(conn, env: dict, today_s: str) -> None:
                             "text": f"*{day} 브리핑* (발송이 밀려 지금 보냅니다)"}}],
                  f"{day} 브리핑 (밀린 발송)",
                  png_path=png if png.exists() else None)
-            log_run(conn, "slack", True, 0, 0.0, f"backlog {day}")
+            log_run(conn, "slack", True, 0, 0.0, f"backlog {day}", for_date=day)
         except Exception as e:
             log.warning("밀린 발송 재시도 실패 (%s): %s", day, e)
             return

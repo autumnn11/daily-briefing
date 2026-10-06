@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS listing_price_history (
 CREATE TABLE IF NOT EXISTS runs (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     ran_at   TEXT NOT NULL,
+    for_date TEXT,
     stage    TEXT NOT NULL,
     ok       INTEGER NOT NULL,
     count    INTEGER NOT NULL DEFAULT 0,
@@ -81,6 +82,9 @@ def init_db(path: Path | str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(runs)")}
+    if "for_date" not in cols:  # 기존 DB 마이그레이션
+        conn.execute("ALTER TABLE runs ADD COLUMN for_date TEXT")
     conn.commit()
     return conn
 
@@ -169,11 +173,18 @@ def max_floor(conn, lawd_cd: str, dong: str, complex_name: str) -> int | None:
     return row["f"]
 
 
-def log_run(conn, stage: str, ok: bool, count: int, secs: float, err: str | None) -> None:
+def log_run(conn, stage: str, ok: bool, count: int, secs: float,
+            err: str | None, for_date: str | None = None) -> None:
+    """실행 결과를 남긴다.
+
+    for_date 는 이 실행이 만든 "브리핑 날짜"다. ran_at(벽시계)과 다를 수 있고,
+    밀린 발송을 찾을 때는 반드시 for_date 로 맞춰야 한다. 벽시계로 맞추면
+    자정 직후 실행이나 --date 지정에서 어긋난다.
+    """
     conn.execute(
-        "INSERT INTO runs (ran_at, stage, ok, count, secs, err) "
-        "VALUES (datetime('now','localtime'),?,?,?,?,?)",
-        (stage, int(ok), count, secs, err),
+        "INSERT INTO runs (ran_at, for_date, stage, ok, count, secs, err) "
+        "VALUES (datetime('now','localtime'),?,?,?,?,?,?)",
+        (for_date, stage, int(ok), count, secs, err),
     )
     conn.commit()
 

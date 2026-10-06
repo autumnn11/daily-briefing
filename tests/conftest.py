@@ -1,3 +1,5 @@
+from datetime import date
+
 import pytest
 
 
@@ -17,6 +19,11 @@ def _stub_external_collectors(monkeypatch, request):
                         lambda *a, **k: ([], []), raising=False)
     monkeypatch.setattr("src.run_daily.collect_naver_all",
                         lambda *a, **k: ({}, []), raising=False)
+    # 테스트는 날짜를 명시적으로 넘긴다. "실제 오늘"을 과거로 고정해 두지 않으면
+    # 달력이 넘어가는 순간 run() 이 재렌더 모드로 빠져 스위트가 통째로 깨진다.
+    # 재렌더 자체를 검증하는 테스트는 today_is 를 직접 넘겨 이 고정을 덮는다.
+    monkeypatch.setattr("src.run_daily._today", lambda: date.min, raising=False)
+
     if "allow_scrape_target" not in request.keywords:
         monkeypatch.setattr("src.collect_naver.scrape_target",
                             _blocked, raising=False)
