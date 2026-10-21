@@ -9,3 +9,6 @@ __pycache__/
 .venv/
 .pytest_cache/
 .superpowers/
+
+# 개인 자료 — 절대 커밋 금지 (취업 서류, 실명·이력 포함)
+취준/
